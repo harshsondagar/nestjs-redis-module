@@ -1,14 +1,7 @@
 {
+  "extends": "../../../tsconfig.json",
   "compilerOptions": {
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "target": "ES2021",
-    "declaration": true,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "esModuleInterop": true
+    "declaration": true
   },
   "include": ["src/**/*.ts"]
 }
