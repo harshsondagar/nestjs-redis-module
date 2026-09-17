@@ -1,9 +1,13 @@
 import { RedisOptions } from 'ioredis';
 import { ModuleMetadata, Type } from '@nestjs/common';
 
-export interface RedisModuleOptions extends RedisOptions {
+export interface RedisConnectionConfig extends RedisOptions {
   connectionName?: string;
   enableLogs?: boolean;
+}
+
+export interface RedisModuleOptions {
+  connections: RedisConnectionConfig[];
 }
 
 export interface RedisModuleOptionsFactory {
@@ -17,6 +21,6 @@ export interface RedisModuleAsyncOptions
   useClass?: Type<RedisModuleOptionsFactory>;
   useFactory?: (
     ...args: any[]
-  ) => Promise<RedisModuleOptions> | RedisModuleOptions;
+  ) => Promise<RedisConnectionConfig> | RedisConnectionConfig;
   inject?: any[];
 }
