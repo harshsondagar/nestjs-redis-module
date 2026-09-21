@@ -1,16 +1,14 @@
 import { DynamicModule, Global, Logger, Module, Provider } from '@nestjs/common';
 import Redis from 'ioredis';
 import {
+  RedisConnectionConfig,
   RedisModuleAsyncOptions,
   RedisModuleOptions,
   RedisModuleOptionsFactory,
 } from './interfaces/redis-module-options.interface';
-import {
-  DEFAULT_REDIS_CONNECTION,
-  REDIS_MODULE_OPTIONS,
-  getRedisClientToken,
-} from './redis.constants';
+import { REDIS_MODULE_OPTIONS, getRedisClientToken } from './redis.constants';
 import { RedisService } from './redis.service';
+import { RateLimiterService } from './rate-limiter.service';
 
 @Global()
 @Module({})
@@ -18,39 +16,49 @@ export class RedisModule {
   private static readonly logger = new Logger('RedisModule');
 
   static forRoot(options: RedisModuleOptions): DynamicModule {
-    const connectionName = options.connectionName ?? DEFAULT_REDIS_CONNECTION;
-    const clientToken = getRedisClientToken(connectionName);
-
-    const clientProvider: Provider = {
-      provide: clientToken,
-      useFactory: () => RedisModule.createClient(options, connectionName),
-    };
+    const clientProviders = options.connections.map((conn) =>
+      RedisModule.buildClientProvider(conn),
+    );
 
     return {
       module: RedisModule,
-      providers: [clientProvider, RedisService],
-      exports: [clientProvider, RedisService],
+      providers: [...clientProviders, RedisService, RateLimiterService],
+      exports: [...clientProviders, RedisService, RateLimiterService],
     };
+
   }
 
   static forRootAsync(options: RedisModuleAsyncOptions): DynamicModule {
-    const connectionName = options.connectionName ?? DEFAULT_REDIS_CONNECTION;
-    const clientToken = getRedisClientToken(connectionName);
-
     const asyncOptionsProvider = RedisModule.createAsyncOptionsProvider(options);
+    const knownNames = ['cache', 'pubsub', 'bullmq'];
 
-    const clientProvider: Provider = {
-      provide: clientToken,
-      useFactory: (redisOptions: RedisModuleOptions) =>
-        RedisModule.createClient(redisOptions, connectionName),
+    const clientProviders: Provider[] = knownNames.map((name) => ({
+      provide: getRedisClientToken(name),
+      useFactory: (opts: RedisModuleOptions) => {
+        const conn = opts.connections.find((c) => c.name === name);
+        if (!conn) return undefined; // not configured for this app -- fine
+        return RedisModule.createClient(conn);
+      },
       inject: [REDIS_MODULE_OPTIONS],
-    };
+    }));
 
     return {
       module: RedisModule,
       imports: options.imports || [],
-      providers: [asyncOptionsProvider, clientProvider, RedisService],
-      exports: [clientProvider, RedisService],
+      providers: [
+        asyncOptionsProvider,
+        ...clientProviders,
+        RedisService,
+        RateLimiterService,
+      ],
+      exports: [...clientProviders, RedisService, RateLimiterService],
+    };
+  }
+
+  private static buildClientProvider(conn: RedisConnectionConfig): Provider {
+    return {
+      provide: getRedisClientToken(conn.name),
+      useFactory: () => RedisModule.createClient(conn),
     };
   }
 
@@ -64,11 +72,7 @@ export class RedisModule {
         inject: options.inject || [],
       };
     }
-
-    const inject = [
-      (options.useClass || options.useExisting) as any,
-    ];
-
+    const inject = [(options.useClass || options.useExisting) as any];
     return {
       provide: REDIS_MODULE_OPTIONS,
       useFactory: async (factory: RedisModuleOptionsFactory) =>
@@ -77,22 +81,17 @@ export class RedisModule {
     };
   }
 
-  private static createClient(
-    options: RedisModuleOptions,
-    connectionName: string,
-  ): Redis {
-    const { connectionName: _drop, enableLogs = true, ...redisOptions } = options;
+  private static createClient(conn: RedisConnectionConfig): Redis {
+    const { name, enableLogs = true, ...redisOptions } = conn;
     const client = new Redis(redisOptions);
 
     if (enableLogs) {
-      client.on('connect', () =>
-        RedisModule.logger.log(`[${connectionName}] connected`),
-      );
+      client.on('connect', () => RedisModule.logger.log(`[${name}] connected`));
       client.on('error', (err) =>
-        RedisModule.logger.error(`[${connectionName}] error: ${err.message}`),
+        RedisModule.logger.error(`[${name}] error: ${err.message}`),
       );
       client.on('reconnecting', () =>
-        RedisModule.logger.warn(`[${connectionName}] reconnecting...`),
+        RedisModule.logger.warn(`[${name}] reconnecting...`),
       );
     }
 

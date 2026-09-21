@@ -1,63 +1,79 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import Redis from 'ioredis';
-import { DEFAULT_REDIS_CONNECTION, getRedisClientToken } from './redis.constants';
+import { InjectRedis } from './redis.decoretor';
 
-/**
- * Thin convenience wrapper around the ioredis client.
- * Inject this in your services instead of the raw client for the
- * common operations; use `getClient()` when you need full ioredis API
- * (pipelines, pub/sub, scripting, etc.).
- */
 @Injectable()
 export class RedisService {
-  constructor(
-    @Inject(getRedisClientToken(DEFAULT_REDIS_CONNECTION))
-    private readonly client: Redis,
-  ) {}
+  private readonly logger = new Logger(RedisService.name);
+
+  constructor(@InjectRedis('cache') private readonly client: Redis) { }
 
   getClient(): Redis {
     return this.client;
   }
 
   async get(key: string): Promise<string | null> {
-    return this.client.get(key);
+    try {
+      return await this.client.get(key);
+    } catch (error) {
+      this.logger.warn(`cache GET failed for key "${key}": ${(error as Error).message}`);
+      return null;
+    }
   }
 
-  async set(key: string, value: string, ttlSeconds?: number): Promise<'OK'> {
-    if (ttlSeconds) {
-      return this.client.set(key, value, 'EX', ttlSeconds);
+  async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
+    try {
+      ttlSeconds
+        ? await this.client.set(key, value, 'EX', ttlSeconds)
+        : await this.client.set(key, value);
+    } catch (error) {
+      this.logger.warn(`cache SET failed for key "${key}": ${(error as Error).message}`);
     }
-    return this.client.set(key, value);
   }
 
   async getJSON<T>(key: string): Promise<T | null> {
-    const raw = await this.client.get(key);
-    return raw ? (JSON.parse(raw) as T) : null;
+    const raw = await this.get(key);
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
   }
 
-  async setJSON<T>(key: string, value: T, ttlSeconds?: number): Promise<'OK'> {
+  async setJSON<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
     return this.set(key, JSON.stringify(value), ttlSeconds);
   }
 
-  async del(...keys: string[]): Promise<number> {
-    return this.client.del(...keys);
+  async wrap<T>(key: string, computeFn: () => Promise<T>, ttlSeconds?: number): Promise<T> {
+    const cached = await this.getJSON<T>(key);
+    if (cached !== null) return cached;
+    const fresh = await computeFn();
+    await this.setJSON(key, fresh, ttlSeconds);
+    return fresh;
+  }
+
+  async del(...keys: string[]): Promise<void> {
+    try {
+      await this.client.del(...keys);
+    } catch (error) {
+      this.logger.warn(`cache DEL failed for keys "${keys.join(',')}": ${(error as Error).message}`);
+    }
   }
 
   async exists(key: string): Promise<boolean> {
-    const result = await this.client.exists(key);
-    return result === 1;
-  }
-
-  async expire(key: string, ttlSeconds: number): Promise<boolean> {
-    const result = await this.client.expire(key, ttlSeconds);
-    return result === 1;
-  }
-
-  async incr(key: string): Promise<number> {
-    return this.client.incr(key);
+    try {
+      return (await this.client.exists(key)) === 1;
+    } catch {
+      return false;
+    }
   }
 
   async ttl(key: string): Promise<number> {
-    return this.client.ttl(key);
+    try {
+      return await this.client.ttl(key);
+    } catch {
+      return -1;
+    }
   }
 }
